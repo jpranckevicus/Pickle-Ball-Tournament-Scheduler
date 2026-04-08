@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-import os
-import socket
 from typing import List, Optional
 
 import streamlit as st
@@ -11,21 +9,6 @@ from pickleball_tournament import TournamentScheduler
 
 
 st.set_page_config(page_title="Pickleball Tournament", layout="centered")
-
-
-def _get_lan_ip() -> str:
-    # Best-effort local LAN IP detection for the "open on your phone" URL.
-    # This does not send data; it just asks the OS which interface would be used.
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-        finally:
-            s.close()
-        return ip
-    except OSError:
-        return "localhost"
 
 
 def _parse_names(text: str) -> List[str]:
@@ -43,17 +26,6 @@ def _parse_names(text: str) -> List[str]:
     return out
 
 
-def _default_port() -> int:
-    # If launched via run_streamlit_phone.ps1, this is set.
-    env_port = os.getenv("PB_STREAMLIT_PORT")
-    if env_port:
-        try:
-            return int(env_port)
-        except ValueError:
-            pass
-    return int(st.session_state.get("port", 8501))
-
-
 def _ensure_state() -> None:
     if "scheduler" not in st.session_state:
         st.session_state.scheduler = None
@@ -61,6 +33,8 @@ def _ensure_state() -> None:
         st.session_state.history = []
     if "last_error" not in st.session_state:
         st.session_state.last_error = None
+    if "request_next_round" not in st.session_state:
+        st.session_state.request_next_round = False
 
 
 def _format_team(team) -> str:
@@ -77,8 +51,7 @@ st.title("Pickleball Tournament Scheduler")
 
 st.caption("Share this page’s URL to open it on any phone.")
 
-with st.sidebar:
-    st.header("Setup")
+with st.expander("Setup", expanded=st.session_state.get("scheduler") is None):
     initial_players_text = st.text_area(
         "Players (comma-separated)",
         value=st.session_state.get("initial_players_text", ""),
@@ -88,40 +61,22 @@ with st.sidebar:
     st.session_state.initial_players_text = initial_players_text
 
     courts = st.number_input("Courts", min_value=1, max_value=3, value=3, step=1)
-    with st.expander("Local network (optional)"):
-        st.write("Only needed if you run this app on your own computer.")
-        port = st.number_input(
-            "Port",
-            min_value=1024,
-            max_value=65535,
-            value=_default_port(),
-            step=1,
-        )
-        st.session_state.port = int(port)
+
+    seed_enabled = st.checkbox("Use seed", value=st.session_state.get("seed_enabled", False))
     seed = st.number_input(
-        "Seed (optional)",
+        "Seed",
         min_value=0,
         max_value=2**31 - 1,
         value=st.session_state.get("seed", 0),
         step=1,
+        disabled=not seed_enabled,
     )
-    seed_enabled = st.checkbox("Use seed", value=st.session_state.get("seed_enabled", False))
     st.session_state.seed_enabled = seed_enabled
     st.session_state.seed = seed
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        start_clicked = st.button("Start / Reset", use_container_width=True)
-    with col_b:
-        next_clicked = st.button("Next round", use_container_width=True)
+    start_clicked = st.button("Start / Reset", use_container_width=True)
 
 st.divider()
-
-with st.expander("Local network URL (only if running on your PC)"):
-    lan_ip = _get_lan_ip()
-    port_value = int(st.session_state.get("port", _default_port()))
-    st.write("Open on phone (same Wi‑Fi):")
-    st.code(f"http://{lan_ip}:{port_value}", language=None)
 
 if start_clicked:
     names = _parse_names(initial_players_text)
@@ -139,10 +94,14 @@ if start_clicked:
 scheduler = _get_scheduler()
 
 if scheduler is None:
-    st.info("Enter players in the sidebar, then click Start / Reset.")
+    st.info("Open Setup, enter players, then click Start / Reset.")
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
     st.stop()
+
+next_clicked_main = st.button("Next round", use_container_width=True, key="next_round_main")
+if next_clicked_main:
+    st.session_state.request_next_round = True
 
 st.subheader("Attendance")
 present_now = scheduler.present_players()
@@ -169,7 +128,8 @@ if add_clicked:
     st.session_state.last_error = None
     st.rerun()
 
-if next_clicked:
+if st.session_state.request_next_round:
+    st.session_state.request_next_round = False
     schedule = scheduler.schedule_next_round()
     if schedule is None:
         st.session_state.last_error = (
@@ -234,6 +194,15 @@ else:
             last["results"] = winners
             st.success("Saved.")
             st.rerun()
+
+    next_clicked_near_results = st.button(
+        "Next round",
+        use_container_width=True,
+        key="next_round_near_results",
+    )
+    if next_clicked_near_results:
+        st.session_state.request_next_round = True
+        st.rerun()
 
 st.subheader("Leaderboard")
 leader_rows = []
